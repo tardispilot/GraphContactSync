@@ -17,6 +17,26 @@ Please see the **Acknowledgements** section for attribution of the idea that sta
 - Includes Org-level contacts from M365 > Users > Contacts. Useful for non-person contacts such as office/branch information.
 - Compares old and new field values so it only replaces a contact entry if change detected.
 - Handles employee photos. Not very well, but hey it works-ish.
+- **FileAs field formatting**: Configure how contacts are filed ("First Last" or "Last, First" format).
+- **Categories support**: Assign categories to contacts, useful when syncing to main Contacts folder.
+
+## Parameters
+
+### Required Parameters
+- `ExchangeOrg`: The Exchange Organization to connect to
+- `ClientID`: The Client ID for the application
+- `CertificatePath`: The path to the certificate file
+- `CertificatePassword`: The certificate password
+- `CertificatePasswordFile`: The path to the certificate password file
+- `MailboxList`: The list of mailboxes to sync contacts to (or "DIRECTORY" for all)
+- `ManagedContactFolderName`: The name of the folder to sync contacts to
+- `LogPath`: The path to the log file
+
+### Optional Parameters
+- `FileAsFormat`: How to format the FileAs field. Valid values:
+  - `"FirstLast"` (default): "John Smith"
+  - `"LastFirst"`: "Smith, John"
+- `Categories`: Array of categories to assign to contacts. Example: `@("Business Contacts", "Company Directory")`
 
 ## Notes and disclaimers
 
@@ -97,7 +117,9 @@ Please see the **Acknowledgements** section for attribution of the idea that sta
    	-CertificatePassword "ThereHasToBeABetterWay?!"`
    	-MailboxList "justme@mycompany.com" `
    	-ManagedContactFolderName "My Company - Managed"`
-   	-LogPath "$PSScriptRoot\Logs"
+   	-LogPath "$PSScriptRoot\Logs" `
+   	-FileAsFormat "LastFirst" `
+   	-Categories @("Business Contacts", "Company Directory")
    ```
 9. Once you're ready, specify "DIRECTORY" for the MailboxList parameter
    ```
