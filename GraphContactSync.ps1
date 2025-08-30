@@ -8,9 +8,13 @@
 .PARAMETER ClientID
     The Client ID for the application.
 .PARAMETER CertificatePath
-    The path to the certificate file.
-.PARAMETER CertificateAuthPath
-    The path to the certificate password file.
+    The path to the certificate PFX file. Required when using PFX file authentication.
+.PARAMETER CertificateThumbprint
+    The thumbprint of the certificate installed in the certificate store. Use this for secure authentication without passwords.
+.PARAMETER CertificatePassword
+    The password for the PFX certificate file. Use only when CertificateThumbprint is not specified.
+.PARAMETER CertificatePasswordFile
+    The path to an encrypted password file for the PFX certificate. Alternative to plaintext password.
 .PARAMETER MailboxList
     The list of mailboxes to sync contacts to.
 .PARAMETER ManagedContactFolderName
@@ -30,13 +34,16 @@ Param(
     [Parameter(Mandatory = $true)]
     [string]$ClientID,
     
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $false)]
     [System.IO.FileInfo]$CertificatePath,
     
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $false)]
+    [string]$CertificateThumbprint,
+    
+    [Parameter(Mandatory = $false)]
     [string]$CertificatePassword,
     
-    [Parameter(Mandatory = $true)]
+    [Parameter(Mandatory = $false)]
     [System.IO.FileInfo]$CertificatePasswordFile,
 
     [Parameter(Mandatory = $true)]
@@ -55,6 +62,19 @@ Param(
     [Parameter(Mandatory = $false)]
     [string[]]$Categories = @()
 )
+
+# Parameter validation
+if (-not $CertificateThumbprint -and -not $CertificatePath) {
+    throw "Either CertificateThumbprint or CertificatePath must be specified."
+}
+
+if ($CertificateThumbprint -and $CertificatePath) {
+    throw "CertificateThumbprint and CertificatePath cannot both be specified. Choose one authentication method."
+}
+
+if ($CertificatePath -and -not $CertificatePassword -and -not $CertificatePasswordFile) {
+    throw "When using CertificatePath, either CertificatePassword or CertificatePasswordFile must be specified."
+}
 
 Import-Module PoShLog
 
@@ -306,14 +326,50 @@ Write-InfoLog "Starting Graph Contact Sync"
 $ErrorActionPreference = "Stop"
 $VerbosePreference = "Continue"
 
-# Import the Application Certificate Password
-#[Security.SecureString]$CertificatePassword = Get-Content -Path $CertificatePasswordFile | ConvertTo-SecureString -Key (Get-Content -Path $CertificatePasswordKeyFile)
-
+# Load certificate based on authentication method
 # Force TLS 1.2
 [Net.ServicePointManager]::SecurityProtocol = [Net.SecurityProtocolType]::Tls12
 
-# Create a new X509 Certificate object with the PFX file and password
-$Certificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($CertificatePath, $CertificatePassword)
+if ($CertificateThumbprint) {
+    # Method 1: Use certificate from Windows Certificate Store by thumbprint
+    Write-InfoLog "Loading certificate from certificate store using thumbprint: $CertificateThumbprint"
+    
+    # Try CurrentUser store first, then LocalMachine
+    $Certificate = Get-ChildItem -Path "Cert:\CurrentUser\My" | Where-Object { $_.Thumbprint -eq $CertificateThumbprint }
+    
+    if (-not $Certificate) {
+        $Certificate = Get-ChildItem -Path "Cert:\LocalMachine\My" | Where-Object { $_.Thumbprint -eq $CertificateThumbprint }
+    }
+    
+    if (-not $Certificate) {
+        throw "Certificate with thumbprint '$CertificateThumbprint' not found in CurrentUser\My or LocalMachine\My certificate stores."
+    }
+    
+    Write-InfoLog "Successfully loaded certificate: $($Certificate.Subject)"
+}
+else {
+    # Method 2: Use PFX file with password (legacy method)
+    Write-InfoLog "Loading certificate from PFX file: $CertificatePath"
+    
+    if ($CertificatePasswordFile) {
+        # Use encrypted password file
+        Write-InfoLog "Reading encrypted password from file: $CertificatePasswordFile"
+        try {
+            $SecureCertificatePassword = Get-Content -Path $CertificatePasswordFile | ConvertTo-SecureString
+        }
+        catch {
+            throw "Failed to read or decrypt password file '$CertificatePasswordFile'. Ensure the file was created on this machine by the same user."
+        }
+    }
+    else {
+        # Use plaintext password (not recommended)
+        Write-InfoLog "WARNING: Using plaintext password for certificate. Consider using CertificateThumbprint or CertificatePasswordFile for better security."
+        $SecureCertificatePassword = ConvertTo-SecureString -String $CertificatePassword -AsPlainText -Force
+    }
+    
+    # Create certificate object with secure password
+    $Certificate = New-Object System.Security.Cryptography.X509Certificates.X509Certificate2($CertificatePath, $SecureCertificatePassword)
+}
 
 # Connect to the Microsoft Graph API
 Connect-MgGraph -Certificate $Certificate -ClientId $ClientID -TenantId $ExchangeOrg -Verbose
