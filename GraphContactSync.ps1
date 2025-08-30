@@ -17,6 +17,10 @@
     The name of the folder to sync contacts to.
 .PARAMETER LogPath
     The path to the log file.
+.PARAMETER FileAsFormat
+    The format for the FileAs field. Valid values are "FirstLast" (default) or "LastFirst".
+.PARAMETER Categories
+    Optional array of categories to assign to contacts. Useful when syncing to main Contacts folder.
 #>
 
 Param(    
@@ -42,7 +46,14 @@ Param(
     [string]$ManagedContactFolderName,
 
     [Parameter(Mandatory = $true)]
-    [string]$LogPath
+    [string]$LogPath,
+
+    [Parameter(Mandatory = $false)]
+    [ValidateSet("FirstLast", "LastFirst")]
+    [string]$FileAsFormat = "FirstLast",
+
+    [Parameter(Mandatory = $false)]
+    [string[]]$Categories = @()
 )
 
 Import-Module PoShLog
@@ -59,7 +70,14 @@ function Sync-ManagedContacts {
         [string]$ManagedContactFolderName,
 
         [Parameter(Mandatory = $true)]
-        $ManagedContacts
+        $ManagedContacts,
+
+        [Parameter(Mandatory = $false)]
+        [ValidateSet("FirstLast", "LastFirst")]
+        [string]$FileAsFormat = "FirstLast",
+
+        [Parameter(Mandatory = $false)]
+        [string[]]$Categories = @()
     )
 
     # Get the given User's Managed Contact Folder
@@ -203,6 +221,18 @@ function Sync-ManagedContacts {
 
         Write-VerboseLog "Adding contact: $($Contact.DisplayName) with checksum: $ManagedContactChecksum"
 
+        # Determine the FileAs value based on the format
+        $fileAsValue = ""
+        if ($FileAsFormat -eq "LastFirst" -and $Contact.Surname -and $Contact.GivenName) {
+            $fileAsValue = "$($Contact.Surname), $($Contact.GivenName)"
+        }
+        elseif ($FileAsFormat -eq "FirstLast" -and $Contact.GivenName -and $Contact.Surname) {
+            $fileAsValue = "$($Contact.GivenName) $($Contact.Surname)"
+        }
+        elseif ($Contact.DisplayName) {
+            $fileAsValue = $Contact.DisplayName
+        }
+
         $newContact = @{
             extensions     = @(
                 @{
@@ -219,12 +249,18 @@ function Sync-ManagedContacts {
             jobTitle       = $Contact.JobTitle
             department     = $Contact.Department
             officeLocation = $Contact.OfficeLocation
+            fileAs         = $fileAsValue
             emailAddresses = @(
                 @{
                     name    = $Contact.DisplayName
                     address = $Contact.Mail
                 }
             )
+        }
+
+        # Add categories if specified
+        if ($Categories.Count -gt 0) {
+            $newContact.categories = $Categories
         }
 
         if ($Contact.EntryType -eq 'User') {
@@ -309,7 +345,7 @@ else {
 foreach ($MailboxTarget in $MailboxTargets) {
     try {
         Write-DebugLog "Syncing Managed Contacts for Mailbox: $MailboxTarget"
-        Sync-ManagedContacts -Mailbox $MailboxTarget -ManagedContactFolderName $ManagedContactFolderName -ManagedContacts $CombinedContactList
+        Sync-ManagedContacts -Mailbox $MailboxTarget -ManagedContactFolderName $ManagedContactFolderName -ManagedContacts $CombinedContactList -FileAsFormat $FileAsFormat -Categories $Categories
     }
     catch {
         Write-ErrorLog "Error syncing Managed Contacts for Mailbox: $MailboxTarget Exception: $_.Exception"
