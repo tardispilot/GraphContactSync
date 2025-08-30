@@ -1,0 +1,17 @@
+# Logs
+Logs/
+*.log
+
+# Photos directory - contains downloaded user photos
+Photos/
+
+# Test files - temporary test scripts
+Test-*.ps1
+
+# PowerShell execution policy
+Set-ExecutionPolicy.ps1
+
+# Certificates and credentials - never commit these!
+*.pfx
+*.cer
+*.cred

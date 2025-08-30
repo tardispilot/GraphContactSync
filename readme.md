@@ -16,7 +16,7 @@ Please see the **Acknowledgements** section for attribution of the idea that sta
 
 - Includes Org-level contacts from M365 > Users > Contacts. Useful for non-person contacts such as office/branch information.
 - Compares old and new field values so it only replaces a contact entry if change detected.
-- Handles employee photos. Not very well, but hey it works-ish.
+- **Automatic photo change detection**: Detects when user profile photos change and automatically updates them across all synchronized contacts. Uses Microsoft Graph photo metadata to efficiently track changes without re-downloading unchanged photos.
 - **FileAs field formatting**: Configure how contacts are filed ("First Last" or "Last, First" format).
 - **Categories support**: Assign categories to contacts, useful when syncing to main Contacts folder.
 
@@ -196,6 +196,17 @@ If you have existing PFX files and need to create encrypted password files:
     -MailboxList "DIRECTORY" `
    ```
 10. Once you are comfortable that the scipt is working, adding a Task in Task Scheduler on an always-on system is the simplest way to set this and "forget it", until the certificate needs renewing.
+
+## Photo Handling
+
+The script automatically downloads and tracks user profile photos:
+
+- **Photos Directory**: Photos are stored in a `Photos\` subdirectory (automatically created)
+- **Change Detection**: The script tracks photo metadata and automatically detects when profile photos change
+- **Automatic Updates**: When photo changes are detected, the script removes old photos and downloads new ones
+- **Efficient Sync**: Only downloads photos when they're missing or changed, avoiding unnecessary re-downloads
+
+No manual intervention is required for photo management - the script handles all photo synchronization automatically.
 
 ## License
 

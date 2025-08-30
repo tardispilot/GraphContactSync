@@ -202,11 +202,41 @@ function Sync-ManagedContacts {
         $ManagedContactChecksum = [System.BitConverter]::ToString($md5.ComputeHash($utf8.GetBytes($ManagedContactChecksumFields)))
         $ExistingContactChecksum = [System.BitConverter]::ToString($md5.ComputeHash($utf8.GetBytes($ExistingContactChecksumFields)))
 
+        # Check for photo changes for User contacts
+        $PhotoChanged = $false
+        if ($ManagedContact.EntryType -eq 'User') {
+            # Get current photo metadata
+            $CurrentPhotoMeta = Get-MgUserPhoto -UserId $ManagedContact.UserPrincipalName -ProfilePhotoId 120x120 -ErrorAction SilentlyContinue
+            $CurrentPhotoChecksum = ""
+            if ($CurrentPhotoMeta) {
+                $PhotoFingerprint = "$($CurrentPhotoMeta.Id)_$($CurrentPhotoMeta.Height)x$($CurrentPhotoMeta.Width)"
+                $CurrentPhotoChecksum = [System.BitConverter]::ToString($md5.ComputeHash($utf8.GetBytes($PhotoFingerprint)))
+            }
+            
+            # Compare with stored photo checksum
+            $StoredPhotoChecksum = $ExistingContact.Extensions.AdditionalProperties.PhotoChecksum ?? ""
+            if ($CurrentPhotoChecksum -ne $StoredPhotoChecksum) {
+                $PhotoChanged = $true
+                Write-VerboseLog "Photo changed for contact: $($ManagedContact.DisplayName) - Old: [$StoredPhotoChecksum] New: [$CurrentPhotoChecksum]"
+            }
+        }
+
         Write-VerboseLog "Comparing Managed Contact Checksums: [$ExistingContactChecksum] vs [$ManagedContactChecksum]"
 
-        if ($ExistingContactChecksum -ne $ManagedContactChecksum) {
-            #if this is an edited contact, effectively delete the old one and add the new one
-            Write-DebugLog "Detected changed contact: $($ManagedContact.DisplayName)"
+        if ($ExistingContactChecksum -ne $ManagedContactChecksum -or $PhotoChanged) {
+            #if this is an edited contact or photo changed, effectively delete the old one and add the new one
+            if ($ExistingContactChecksum -ne $ManagedContactChecksum) {
+                Write-DebugLog "Detected changed contact: $($ManagedContact.DisplayName)"
+            }
+            if ($PhotoChanged) {
+                Write-DebugLog "Detected photo change for contact: $($ManagedContact.DisplayName)"
+                # Remove old photo file to force re-download
+                $OldPhotoPath = "Photos\$($ManagedContact.UserPrincipalName).jpg"
+                if (Test-Path $OldPhotoPath) {
+                    Remove-Item $OldPhotoPath -Force -ErrorAction SilentlyContinue
+                    Write-VerboseLog "Removed old photo file: $OldPhotoPath"
+                }
+            }
             $ContactsToDelete += $ExistingContact
             $ContactsToAdd += $ManagedContact
         }
@@ -220,9 +250,19 @@ function Sync-ManagedContacts {
     foreach ($Contact in $ContactsToAdd) {
         #Only Members have photos
         $ContactPhotoFile = $null
+        $PhotoChecksum = ""
         if ($Contact.EntryType -eq 'User') {
-            # Get the photo for the contact
+            # Get photo metadata to create checksum for change detection
+            $PhotoMeta = Get-MgUserPhoto -UserId $Contact.UserPrincipalName -ProfilePhotoId 120x120 -ErrorAction SilentlyContinue
+            if ($PhotoMeta) {
+                # Create photo fingerprint from available metadata
+                $PhotoFingerprint = "$($PhotoMeta.Id)_$($PhotoMeta.Height)x$($PhotoMeta.Width)"
+                $PhotoChecksum = [System.BitConverter]::ToString($md5.ComputeHash($utf8.GetBytes($PhotoFingerprint)))
+            }
+            
+            # Download photo if it doesn't exist (including after photo change detection)
             if (!(Test-Path -PathType Leaf -Path "Photos\$($Contact.UserPrincipalName).jpg")) {
+                Write-VerboseLog "Downloading photo for contact: $($Contact.DisplayName)"
                 Get-MgUserPhotoContent -UserId $Contact.UserPrincipalName -ProfilePhotoId 120x120 -OutFile "Photos\$($Contact.UserPrincipalName).jpg" -ErrorAction SilentlyContinue
             }
             if ((Test-Path -PathType Leaf -Path "Photos\$($Contact.UserPrincipalName).jpg")) {
@@ -259,6 +299,7 @@ function Sync-ManagedContacts {
                     "@odata.type" = "microsoft.graph.openTypeExtension"
                     ExtensionName = "ManagedContactCorrelation"
                     CorrelationId = $Contact.Id.ToString()
+                    PhotoChecksum = $PhotoChecksum
                     #ContactChecksum = $ManagedContactChecksum
                 }
             )
@@ -325,6 +366,12 @@ Write-InfoLog "Starting Graph Contact Sync"
 
 $ErrorActionPreference = "Stop"
 $VerbosePreference = "Continue"
+
+# Ensure Photos directory exists
+if (!(Test-Path -Path "Photos")) {
+    New-Item -ItemType Directory -Path "Photos" -Force | Out-Null
+    Write-VerboseLog "Created Photos directory"
+}
 
 # Load certificate based on authentication method
 # Force TLS 1.2
