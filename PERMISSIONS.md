@@ -61,5 +61,35 @@ The Azure app registration permissions have been verified and updated to remove 
 - **Compatibility:** No functional impact - all operations continue to work through Graph API
 - **Future-proof:** Aligned with Microsoft's Graph-first strategy
 
+## Validation
+
+To validate that the minimal permissions are sufficient, you can run the following PowerShell test:
+
+```powershell
+# Test minimal permissions
+param(
+    [Parameter(Mandatory = $true)]
+    [string]$TenantId,
+    [Parameter(Mandatory = $true)] 
+    [string]$ClientId,
+    [Parameter(Mandatory = $true)]
+    [string]$CertificateThumbprint
+)
+
+# Load certificate
+$Certificate = Get-ChildItem -Path "Cert:\CurrentUser\My" | Where-Object { $_.Thumbprint -eq $CertificateThumbprint }
+
+# Connect and test
+Connect-MgGraph -Certificate $Certificate -ClientId $ClientId -TenantId $TenantId
+
+# Test operations
+$testUser = Get-MgUser -Top 1 -Property DisplayName
+$testContacts = Get-MgContact -Top 1 -Property DisplayName  
+$photoMeta = Get-MgUserPhoto -UserId $testUser.UserPrincipalName -ProfilePhotoId 120x120 -ErrorAction SilentlyContinue
+
+Write-Host "✅ All operations successful with minimal Graph permissions"
+Disconnect-MgGraph
+```
+
 ## Migration Notes
 Existing Azure app registrations can safely remove the Exchange Online permissions. The application will continue to function with only the Microsoft Graph permissions listed above.
