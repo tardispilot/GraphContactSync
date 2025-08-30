@@ -20,17 +20,53 @@ Please see the **Acknowledgements** section for attribution of the idea that sta
 - **FileAs field formatting**: Configure how contacts are filed ("First Last" or "Last, First" format).
 - **Categories support**: Assign categories to contacts, useful when syncing to main Contacts folder.
 
+## Security
+
+### Certificate Authentication Methods
+
+This script supports three authentication methods, listed in order of security (most secure first):
+
+1. **Certificate Thumbprint (Recommended)**: Uses certificates installed in the Windows Certificate Store. No password storage required.
+2. **Encrypted Password File**: Stores the PFX password in an encrypted file that can only be decrypted by the same user on the same machine.
+3. **Plaintext Password**: Stores the password in plaintext in scripts or command line. **Not recommended for production use.**
+
+### Security Best Practices
+
+- **Use Certificate Thumbprint authentication** whenever possible for the highest security
+- **Never commit plaintext passwords** to source control
+- **Store encrypted password files securely** and restrict access
+- **Regularly rotate certificates** and update thumbprints
+- **Use least privilege principles** when assigning Azure application permissions
+
+### Creating Encrypted Password Files
+
+If you have existing PFX files and need to create encrypted password files:
+
+```powershell
+.\Getting Started\Create-EncryptedPassword.ps1 -OutputPath "C:\Certs\certificate.cred"
+```
+
 ## Parameters
 
 ### Required Parameters
 - `ExchangeOrg`: The Exchange Organization to connect to
 - `ClientID`: The Client ID for the application
-- `CertificatePath`: The path to the certificate file
-- `CertificatePassword`: The certificate password
-- `CertificatePasswordFile`: The path to the certificate password file
 - `MailboxList`: The list of mailboxes to sync contacts to (or "DIRECTORY" for all)
 - `ManagedContactFolderName`: The name of the folder to sync contacts to
 - `LogPath`: The path to the log file
+
+### Certificate Authentication Parameters (Choose One Method)
+
+#### Method 1: Certificate Thumbprint (Recommended - Most Secure)
+- `CertificateThumbprint`: The thumbprint of the certificate installed in the Windows Certificate Store
+
+#### Method 2: PFX File with Encrypted Password File  
+- `CertificatePath`: The path to the certificate PFX file
+- `CertificatePasswordFile`: The path to an encrypted password file
+
+#### Method 3: PFX File with Plaintext Password (Not Recommended)
+- `CertificatePath`: The path to the certificate PFX file  
+- `CertificatePassword`: The certificate password (security risk - use other methods instead)
 
 ### Optional Parameters
 - `FileAsFormat`: How to format the FileAs field. Valid values:
@@ -58,13 +94,16 @@ Please see the **Acknowledgements** section for attribution of the idea that sta
 3. Create Certificate files
    - Using the script in the `Getting Started` folder
    ```
-   .\Create-Certificates.ps1 -CertificateName contactsync.mydomain.com -CertificatePassword 'myPassword!' [-CertificatePath <path>] [-RemoveCert]
-   # the -RemoveCert flag deletes the created certificate from the Current User Certificate Store after exporting.
+   .\Create-Certificates.ps1 -CertificateName contactsync.mydomain.com -CertificatePassword 'myPassword!' [-CertificatePath <path>] [-CreatePasswordFile]
+   # Use -CreatePasswordFile to create an encrypted password file for secure storage
+   # Do NOT use -RemoveCert if you want to use thumbprint authentication (recommended)
    ```
-   - This will result in 2 files being created:
+   - This will result in files being created and display the certificate thumbprint:
    ```
    contactsync.mydomain.com.pfx <-- This file contains the public and PRIVATE KEY. Take care!
-   contactsync.mydomain.com.cer <-- This file contains the public key for uploading to Azure in the next step.
+   contactsync.mydomain.com.cer <-- This file contains the public key for uploading to Azure.
+   contactsync.mydomain.com.cred <-- Encrypted password file (if -CreatePasswordFile used)
+   Certificate Thumbprint: 1234567890ABCDEF... <-- Use this for secure authentication
    ```
 4. Create an Azure app & certificate file using [the tutorial here](https://github.com/MicrosoftDocs/office-docs-powershell/blob/main/exchange/docs-conceptual/app-only-auth-powershell-v2.md), taking note of the differences below.
    - The app will require **Global Reader** permission (Referenced in tutorial).
@@ -107,16 +146,47 @@ Please see the **Acknowledgements** section for attribution of the idea that sta
    ![Correct API permissions example](images/api_permissions.png)
 6.
 7. You'll also need your Office 365 organization URL (Ends in .onmicrosoft.com). To find this, navigate to the **Office 365 Admin Center** -> **Setup** -> **Domains**
-8. To test the script, create a .ps1 file similar to this
-   ```
+8. To test the script, choose one of the secure authentication methods below:
+
+   **Method 1 - Certificate Thumbprint (Recommended):**
+   ```powershell
    #_RunSingle.ps1
-   .\GraphContactSync.ps1`
+   .\GraphContactSync.ps1 `
    	-ExchangeOrg "mytenantname.onmicrosoft.com" `
-   	-ClientID "506dcb63-64c6-4b8b-9a5a-f5cdabb123e9"`
-   	-CertificatePath "C:\CERTS\contactsync.mydomain.com.pfx" `
-   	-CertificatePassword "ThereHasToBeABetterWay?!"`
+   	-ClientID "506dcb63-64c6-4b8b-9a5a-f5cdabb123e9" `
+   	-CertificateThumbprint "1234567890ABCDEF..." `
    	-MailboxList "justme@mycompany.com" `
-   	-ManagedContactFolderName "My Company - Managed"`
+   	-ManagedContactFolderName "My Company - Managed" `
+   	-LogPath "$PSScriptRoot\Logs" `
+   	-FileAsFormat "LastFirst" `
+   	-Categories @("Business Contacts", "Company Directory")
+   ```
+
+   **Method 2 - Encrypted Password File:**
+   ```powershell
+   #_RunSingle.ps1
+   .\GraphContactSync.ps1 `
+   	-ExchangeOrg "mytenantname.onmicrosoft.com" `
+   	-ClientID "506dcb63-64c6-4b8b-9a5a-f5cdabb123e9" `
+   	-CertificatePath "C:\CERTS\contactsync.mydomain.com.pfx" `
+   	-CertificatePasswordFile "C:\CERTS\contactsync.mydomain.com.cred" `
+   	-MailboxList "justme@mycompany.com" `
+   	-ManagedContactFolderName "My Company - Managed" `
+   	-LogPath "$PSScriptRoot\Logs" `
+   	-FileAsFormat "LastFirst" `
+   	-Categories @("Business Contacts", "Company Directory")
+   ```
+
+   **Method 3 - Plaintext Password (Not Recommended):**
+   ```powershell
+   #_RunSingle.ps1
+   .\GraphContactSync.ps1 `
+   	-ExchangeOrg "mytenantname.onmicrosoft.com" `
+   	-ClientID "506dcb63-64c6-4b8b-9a5a-f5cdabb123e9" `
+   	-CertificatePath "C:\CERTS\contactsync.mydomain.com.pfx" `
+   	-CertificatePassword "ThereHasToBeABetterWay?!" `
+   	-MailboxList "justme@mycompany.com" `
+   	-ManagedContactFolderName "My Company - Managed" `
    	-LogPath "$PSScriptRoot\Logs" `
    	-FileAsFormat "LastFirst" `
    	-Categories @("Business Contacts", "Company Directory")
