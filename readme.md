@@ -108,42 +108,34 @@ If you have existing PFX files and need to create encrypted password files:
 4. Create an Azure app & certificate file using [the tutorial here](https://github.com/MicrosoftDocs/office-docs-powershell/blob/main/exchange/docs-conceptual/app-only-auth-powershell-v2.md), taking note of the differences below.
    - The app will require **Global Reader** permission (Referenced in tutorial).
    - Take a record of the Azure app's **Application (client) ID** as you'll need this later.
-   - Enable Public Client Flows in the Azure App (**Authenication** -> **Allow public client flows**)
-   - Specify a redirect URI (**Authenication** -> **Platform Configurations** -> **Add a platform** -> **Mobile and desktop applications** -> Enable 'https://login.microsoftonline.com/common/oauth2/nativeclient' as a redirect URI.)
+   - Enable Public Client Flows in the Azure App (**Authentication** -> **Allow public client flows**)
+   - Specify a redirect URI (**Authentication** -> **Platform Configurations** -> **Add a platform** -> **Mobile and desktop applications** -> Enable 'https://login.microsoftonline.com/common/oauth2/nativeclient' as a redirect URI.)
    - When updating the app's Manifest, insert the code below for **requiredResourceAccess** instead of following what the tutorial suggests.
      ```
      	"requiredResourceAccess": [
      	{
-     	"resourceAppId": "00000002-0000-0ff1-ce00-000000000000",
-     		"resourceAccess": [
-     			{
-     				"id": "dc50a0fb-09a3-484d-be87-e023b12c6440",
-     			"type": "Role"
-     			},
-     			{
-     				"id": "dc890d15-9560-4a4c-9b7f-a736ec74ec40",
-     				"type": "Role"
-     		}
-     		]
-     	},
-     {
-     	"resourceAppId": "00000003-0000-0000-c000-000000000000",
+     		"resourceAppId": "00000003-0000-0000-c000-000000000000",
      		"resourceAccess": [
      			{
      				"id": "6918b873-d17a-4dc1-b314-35f528134491",
-     			"type": "Role"
+     				"type": "Role"
      			},
      			{
      				"id": "df021288-bdef-4463-88db-98f22de89214",
      				"type": "Role"
-     		}
+     			}
      		]
      	}
      ]
      ```
+     **Note:** This manifest only includes Microsoft Graph permissions. Previous versions required Exchange Online permissions (`Exchange.ManageAsApp` and `full_access_as_app`) which are no longer needed since this version uses the Microsoft Graph API exclusively instead of Exchange Web Services (EWS).
      The application's certificate has already been generated in a previous step, so skip that section in the tutorial, uploading the .cer file .
-5. Confirm permissions are correct from the **API permissions** page.
-   ![Correct API permissions example](images/api_permissions.png)
+5. Confirm permissions are correct from the **API permissions** page. You should see:
+   - **Microsoft Graph**:
+     - `Contacts.ReadWrite` - Read and write contacts in all mailboxes
+     - `User.Read.All` - Read all users' full profiles (includes organizational contacts and photos)
+   
+   **Important:** If you have existing Exchange Online permissions (`Exchange.ManageAsApp` or `full_access_as_app`), these can be safely removed as they are no longer required.
 6.
 7. You'll also need your Office 365 organization URL (Ends in .onmicrosoft.com). To find this, navigate to the **Office 365 Admin Center** -> **Setup** -> **Domains**
 8. To test the script, choose one of the secure authentication methods below:
