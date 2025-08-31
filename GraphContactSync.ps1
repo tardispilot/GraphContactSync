@@ -209,7 +209,11 @@ function Sync-ManagedContacts {
             $CurrentPhotoMeta = Get-MgUserPhoto -UserId $ManagedContact.UserPrincipalName -ProfilePhotoId 120x120 -ErrorAction SilentlyContinue
             $CurrentPhotoChecksum = ""
             if ($CurrentPhotoMeta) {
-                $PhotoFingerprint = "$($CurrentPhotoMeta.Id)_$($CurrentPhotoMeta.Height)x$($CurrentPhotoMeta.Width)"
+                # Use mediaETag if available (preferred method), fallback to ID+dimensions for compatibility
+                $PhotoFingerprint = $CurrentPhotoMeta.AdditionalProperties["@odata.mediaEtag"]
+                if (-not $PhotoFingerprint) {
+                    $PhotoFingerprint = "$($CurrentPhotoMeta.Id)_$($CurrentPhotoMeta.Height)x$($CurrentPhotoMeta.Width)"
+                }
                 $CurrentPhotoChecksum = [System.BitConverter]::ToString($md5.ComputeHash($utf8.GetBytes($PhotoFingerprint)))
             }
             
@@ -255,8 +259,11 @@ function Sync-ManagedContacts {
             # Get photo metadata to create checksum for change detection
             $PhotoMeta = Get-MgUserPhoto -UserId $Contact.UserPrincipalName -ProfilePhotoId 120x120 -ErrorAction SilentlyContinue
             if ($PhotoMeta) {
-                # Create photo fingerprint from available metadata
-                $PhotoFingerprint = "$($PhotoMeta.Id)_$($PhotoMeta.Height)x$($PhotoMeta.Width)"
+                # Use mediaETag if available (preferred method), fallback to ID+dimensions for compatibility
+                $PhotoFingerprint = $PhotoMeta.AdditionalProperties["@odata.mediaEtag"]
+                if (-not $PhotoFingerprint) {
+                    $PhotoFingerprint = "$($PhotoMeta.Id)_$($PhotoMeta.Height)x$($PhotoMeta.Width)"
+                }
                 $PhotoChecksum = [System.BitConverter]::ToString($md5.ComputeHash($utf8.GetBytes($PhotoFingerprint)))
             }
             
