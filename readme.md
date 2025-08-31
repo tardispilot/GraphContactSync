@@ -83,111 +83,286 @@ If you have existing PFX files and need to create encrypted password files:
 
 ## Getting Started
 
-1. Install the Exchange Online PowerShell module
-   ```
+This guide will walk you through setting up GraphContactSync to automatically synchronize your organization's contacts to user mailboxes. The process involves creating certificates for secure authentication, registering an Azure application, and configuring the script.
+
+### Overview
+
+```
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│   Certificate   │    │  Azure App       │    │  PowerShell     │
+│   Generation    │───▶│  Registration    │───▶│  Script Setup   │
+│                 │    │                  │    │                 │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+         │                        │                        │
+         ▼                        ▼                        ▼
+┌─────────────────┐    ┌──────────────────┐    ┌─────────────────┐
+│ .pfx & .cer     │    │ Client ID &      │    │ Contact Sync    │
+│ files created   │    │ Permissions      │    │ to Mailboxes    │
+└─────────────────┘    └──────────────────┘    └─────────────────┘
+```
+
+### Prerequisites
+
+1. **Install Required PowerShell Modules**
+   ```powershell
+   # Install Exchange Online PowerShell module
    Install-Module ExchangeOnlineManagement
-   ```
-2. Install PoShLog (for console logging)
-   ```
+   
+   # Install PoShLog for structured console/file logging
    Install-Module PoShLog
    ```
-3. Create Certificate files
-   - Using the script in the `Getting Started` folder
-   ```
-   .\Create-Certificates.ps1 -CertificateName contactsync.mydomain.com -CertificatePassword 'myPassword!' [-CertificatePath <path>] [-CreatePasswordFile]
-   # Use -CreatePasswordFile to create an encrypted password file for secure storage
-   # Do NOT use -RemoveCert if you want to use thumbprint authentication (recommended)
-   ```
-   - This will result in files being created and display the certificate thumbprint:
-   ```
-   contactsync.mydomain.com.pfx <-- This file contains the public and PRIVATE KEY. Take care!
-   contactsync.mydomain.com.cer <-- This file contains the public key for uploading to Azure.
-   contactsync.mydomain.com.cred <-- Encrypted password file (if -CreatePasswordFile used)
-   Certificate Thumbprint: 1234567890ABCDEF... <-- Use this for secure authentication
-   ```
-4. Create an Azure app & certificate file using [the tutorial here](https://github.com/MicrosoftDocs/office-docs-powershell/blob/main/exchange/docs-conceptual/app-only-auth-powershell-v2.md), taking note of the differences below.
-   - The app will require **Global Reader** permission (Referenced in tutorial).
-   - Take a record of the Azure app's **Application (client) ID** as you'll need this later.
-   - Enable Public Client Flows in the Azure App (**Authentication** -> **Allow public client flows**)
-   - Specify a redirect URI (**Authentication** -> **Platform Configurations** -> **Add a platform** -> **Mobile and desktop applications** -> Enable 'https://login.microsoftonline.com/common/oauth2/nativeclient' as a redirect URI.)
-   - When updating the app's Manifest, insert the code below for **requiredResourceAccess** instead of following what the tutorial suggests.
-     ```
-     	"requiredResourceAccess": [
-     	{
-     		"resourceAppId": "00000003-0000-0000-c000-000000000000",
-     		"resourceAccess": [
-     			{
-     				"id": "6918b873-d17a-4dc1-b314-35f528134491",
-     				"type": "Role"
-     			},
-     			{
-     				"id": "df021288-bdef-4463-88db-98f22de89214",
-     				"type": "Role"
-     			}
-     		]
-     	}
-     ]
-     ```
-     **Note:** This manifest only includes Microsoft Graph permissions. Previous versions required Exchange Online permissions (`Exchange.ManageAsApp` and `full_access_as_app`) which are no longer needed since this version uses the Microsoft Graph API exclusively instead of Exchange Web Services (EWS).
-     The application's certificate has already been generated in a previous step, so skip that section in the tutorial, uploading the .cer file .
-5. Confirm permissions are correct from the **API permissions** page. You should see:
-   - **Microsoft Graph**:
-     - `Contacts.ReadWrite` - Read and write contacts in all mailboxes
-     - `User.Read.All` - Read all users' full profiles (includes organizational contacts and photos)
+
+2. **Get Your Organization Information**
    
-   **Important:** If you have existing Exchange Online permissions (`Exchange.ManageAsApp` or `full_access_as_app`), these can be safely removed as they are no longer required.
-6.
-7. You'll also need your Office 365 organization URL (Ends in .onmicrosoft.com). To find this, navigate to the **Office 365 Admin Center** -> **Setup** -> **Domains**
-8. To test the script, choose one of the secure authentication methods below:
+   You'll need your Office 365 organization URL (ends in `.onmicrosoft.com`). To find this:
+   - Navigate to **Microsoft 365 Admin Center** → **Settings** → **Domains**
+   - Look for your primary domain ending in `.onmicrosoft.com`
+   - Example: `mycompany.onmicrosoft.com`
 
-   **Method 1 - Certificate Thumbprint (Recommended):**
+### Step 1: Create Certificates
+
+Use the provided script to generate certificates for secure authentication:
+
+```powershell
+# Navigate to the Getting Started folder
+cd "Getting Started"
+
+# Create certificates (recommended: use -CreatePasswordFile for encrypted storage)
+.\Create-Certificates.ps1 -CertificateName contactsync.mydomain.com -CertificatePassword 'myPassword!' -CreatePasswordFile
+
+# Important: Do NOT use -RemoveCert if you want thumbprint authentication (most secure)
+```
+
+This creates the following files:
+- `contactsync.mydomain.com.pfx` - Contains private key + certificate (keep secure!)
+- `contactsync.mydomain.com.cer` - Public certificate for Azure upload
+- `contactsync.mydomain.com.cred` - Encrypted password file (if -CreatePasswordFile used)
+
+The script will display a certificate thumbprint like: `1234567890ABCDEF...` - save this for later use.
+
+### Step 2: Create Azure Application Registration
+
+#### 2.1 Register New Application
+
+1. Sign in to the **Azure Portal** (https://portal.azure.com)
+2. Navigate to **Azure Active Directory** → **App registrations**
+3. Click **New registration**
+
+   > 📸 *A screenshot showing the "New registration" button in Azure Portal would be helpful here*
+
+4. Configure the application:
+   - **Name**: `GraphContactSync` (or your preferred name)
+   - **Supported account types**: Select "Accounts in this organizational directory only"
+   - **Redirect URI**: Leave blank for now
+   - Click **Register**
+
+   > 📸 *A screenshot of the application registration form would be helpful here*
+
+5. **Record the Application (client) ID** - you'll need this later
+   - Found on the app's Overview page under "Application (client) ID"
+
+   > 📸 *A screenshot highlighting where to find the Application ID would be helpful here*
+
+#### 2.2 Configure Authentication
+
+1. In your app registration, go to **Authentication**
+2. Click **Add a platform**
+
+   > 📸 *A screenshot showing the Authentication page and "Add a platform" button would be helpful here*
+
+3. Select **Mobile and desktop applications**
+4. Add this redirect URI: `https://login.microsoftonline.com/common/oauth2/nativeclient`
+5. Under **Advanced settings**, enable **Allow public client flows** → Set to **Yes**
+
+   > 📸 *A screenshot showing the redirect URI configuration and public client flows setting would be helpful here*
+
+6. Click **Save**
+
+#### 2.3 Upload Certificate
+
+1. Go to **Certificates & secrets**
+2. Click **Upload certificate**
+
+   > 📸 *A screenshot showing the Certificates & secrets page would be helpful here*
+
+3. Select your `.cer` file created in Step 1 (e.g., `contactsync.mydomain.com.cer`)
+4. Add a description: "GraphContactSync Certificate"
+5. Click **Add**
+
+#### 2.4 Configure API Permissions
+
+1. Go to **API permissions**
+2. Click **Add a permission**
+3. Select **Microsoft Graph**
+
+   > 📸 *A screenshot showing the API selection page would be helpful here*
+
+4. Choose **Application permissions**
+5. Add these specific permissions:
+   - **Contacts.ReadWrite** - Read and write contacts in all mailboxes
+   - **User.Read.All** - Read all users' full profiles (includes organizational contacts and photos)
+
+   > 📸 *A screenshot showing how to search for and select these permissions would be helpful here*
+
+6. Click **Add permissions**
+7. **Important**: Click **Grant admin consent for [Your Organization]**
+8. Confirm by clicking **Yes**
+
+After completion, your API permissions should look like this:
+
+![API Permissions](images/api_permissions.png)
+
+*This screenshot shows the correctly configured permissions with admin consent granted.*
+
+**Note**: If you have existing Exchange Online permissions (`Exchange.ManageAsApp` or `full_access_as_app`) from previous versions, these can be safely removed as they are no longer required.
+
+#### 2.5 Alternative: Configure via Manifest (Advanced Users)
+
+Instead of using the UI, you can directly edit the application manifest:
+
+1. Go to **Manifest**
+2. Find the `"requiredResourceAccess"` section
+3. Replace it with:
+   ```json
+   "requiredResourceAccess": [
+       {
+           "resourceAppId": "00000003-0000-0000-c000-000000000000",
+           "resourceAccess": [
+               {
+                   "id": "6918b873-d17a-4dc1-b314-35f528134491",
+                   "type": "Role"
+               },
+               {
+                   "id": "df021288-bdef-4463-88db-98f22de89214",
+                   "type": "Role"
+               }
+           ]
+       }
+   ]
+   ```
+4. Click **Save**
+5. Still need to grant admin consent as described in step 2.4
+### Step 3: Test the Script
+
+Before deploying to all mailboxes, test with a single mailbox using one of these secure authentication methods:
+
+#### Method 1: Certificate Thumbprint (Recommended - Most Secure)
+
+```powershell
+# Create a test script file: TestRun.ps1
+.\GraphContactSync.ps1 `
+    -ExchangeOrg "mycompany.onmicrosoft.com" `
+    -ClientID "your-application-client-id-here" `
+    -CertificateThumbprint "your-certificate-thumbprint-here" `
+    -MailboxList "testuser@mycompany.com" `
+    -ManagedContactFolderName "Company Contacts - Test" `
+    -LogPath "$PSScriptRoot\Logs" `
+    -FileAsFormat "LastFirst" `
+    -Categories @("Business Contacts", "Company Directory")
+```
+
+#### Method 2: Encrypted Password File (Secure Alternative)
+
+```powershell
+.\GraphContactSync.ps1 `
+    -ExchangeOrg "mycompany.onmicrosoft.com" `
+    -ClientID "your-application-client-id-here" `
+    -CertificatePath "C:\Path\To\contactsync.mydomain.com.pfx" `
+    -CertificatePasswordFile "C:\Path\To\contactsync.mydomain.com.cred" `
+    -MailboxList "testuser@mycompany.com" `
+    -ManagedContactFolderName "Company Contacts - Test" `
+    -LogPath "$PSScriptRoot\Logs" `
+    -FileAsFormat "LastFirst" `
+    -Categories @("Business Contacts", "Company Directory")
+```
+
+#### Method 3: Plaintext Password (Not Recommended for Production)
+
+```powershell
+# Only use for initial testing - not recommended for production
+.\GraphContactSync.ps1 `
+    -ExchangeOrg "mycompany.onmicrosoft.com" `
+    -ClientID "your-application-client-id-here" `
+    -CertificatePath "C:\Path\To\contactsync.mydomain.com.pfx" `
+    -CertificatePassword "YourCertificatePassword" `
+    -MailboxList "testuser@mycompany.com" `
+    -ManagedContactFolderName "Company Contacts - Test" `
+    -LogPath "$PSScriptRoot\Logs"
+```
+
+**Replace the following placeholders:**
+- `mycompany.onmicrosoft.com` - Your organization's URL from Prerequisites
+- `your-application-client-id-here` - Application ID from Step 2.1
+- `your-certificate-thumbprint-here` - Thumbprint from Step 1
+- `testuser@mycompany.com` - A test mailbox for initial testing
+- Update certificate paths to match your actual file locations
+
+### Step 4: Deploy to All Mailboxes
+
+Once you've successfully tested with a single mailbox and verified the contacts are syncing correctly:
+
+1. **Deploy to all mailboxes** by changing the MailboxList parameter:
    ```powershell
-   #_RunSingle.ps1
-   .\GraphContactSync.ps1 `
-   	-ExchangeOrg "mytenantname.onmicrosoft.com" `
-   	-ClientID "506dcb63-64c6-4b8b-9a5a-f5cdabb123e9" `
-   	-CertificateThumbprint "1234567890ABCDEF..." `
-   	-MailboxList "justme@mycompany.com" `
-   	-ManagedContactFolderName "My Company - Managed" `
-   	-LogPath "$PSScriptRoot\Logs" `
-   	-FileAsFormat "LastFirst" `
-   	-Categories @("Business Contacts", "Company Directory")
+   -MailboxList "DIRECTORY"
    ```
 
-   **Method 2 - Encrypted Password File:**
+2. **Create a production script** with your final settings:
    ```powershell
-   #_RunSingle.ps1
+   # ProductionRun.ps1
    .\GraphContactSync.ps1 `
-   	-ExchangeOrg "mytenantname.onmicrosoft.com" `
-   	-ClientID "506dcb63-64c6-4b8b-9a5a-f5cdabb123e9" `
-   	-CertificatePath "C:\CERTS\contactsync.mydomain.com.pfx" `
-   	-CertificatePasswordFile "C:\CERTS\contactsync.mydomain.com.cred" `
-   	-MailboxList "justme@mycompany.com" `
-   	-ManagedContactFolderName "My Company - Managed" `
-   	-LogPath "$PSScriptRoot\Logs" `
-   	-FileAsFormat "LastFirst" `
-   	-Categories @("Business Contacts", "Company Directory")
+       -ExchangeOrg "mycompany.onmicrosoft.com" `
+       -ClientID "your-application-client-id-here" `
+       -CertificateThumbprint "your-certificate-thumbprint-here" `
+       -MailboxList "DIRECTORY" `
+       -ManagedContactFolderName "Company Contacts" `
+       -LogPath "$PSScriptRoot\Logs" `
+       -FileAsFormat "LastFirst" `
+       -Categories @("Business Contacts")
    ```
 
-   **Method 3 - Plaintext Password (Not Recommended):**
-   ```powershell
-   #_RunSingle.ps1
-   .\GraphContactSync.ps1 `
-   	-ExchangeOrg "mytenantname.onmicrosoft.com" `
-   	-ClientID "506dcb63-64c6-4b8b-9a5a-f5cdabb123e9" `
-   	-CertificatePath "C:\CERTS\contactsync.mydomain.com.pfx" `
-   	-CertificatePassword "ThereHasToBeABetterWay?!" `
-   	-MailboxList "justme@mycompany.com" `
-   	-ManagedContactFolderName "My Company - Managed" `
-   	-LogPath "$PSScriptRoot\Logs" `
-   	-FileAsFormat "LastFirst" `
-   	-Categories @("Business Contacts", "Company Directory")
-   ```
-9. Once you're ready, specify "DIRECTORY" for the MailboxList parameter
-   ```
-    -MailboxList "DIRECTORY" `
-   ```
-10. Once you are comfortable that the scipt is working, adding a Task in Task Scheduler on an always-on system is the simplest way to set this and "forget it", until the certificate needs renewing.
+### Step 5: Schedule Automated Runs (Optional)
+
+For automated synchronization, set up a scheduled task:
+
+1. Open **Task Scheduler** on your server/workstation
+2. Create a new task with these settings:
+   - **General**: Run whether user is logged on or not
+   - **Triggers**: Set your desired schedule (e.g., daily at 6 AM)
+   - **Actions**: 
+     - Program: `PowerShell.exe`
+     - Arguments: `-ExecutionPolicy Bypass -File "C:\Path\To\Your\ProductionRun.ps1"`
+     - Start in: `C:\Path\To\Your\GraphContactSync\Directory`
+3. **Important**: Use a service account with appropriate permissions
+4. Test the scheduled task manually before relying on it
+
+### Troubleshooting Tips
+
+- **Check logs** in the specified LogPath directory for detailed error information
+- **Verify permissions** in Azure portal if you get authentication errors
+- **Test with a single mailbox first** before deploying to all users
+- **Monitor the first few runs** to ensure contacts are syncing as expected
+- **Certificate expiration**: Plan to renew certificates before they expire (typically 1-2 years)
+
+### Quick Reference
+
+Once you've completed the setup, here are the key files and information you'll need:
+
+| Item | Location/Value | Purpose |
+|------|---------------|---------|
+| Certificate Thumbprint | From Step 1 output | Most secure authentication method |
+| Application (Client) ID | Azure Portal → App Registration → Overview | Required for script authentication |
+| Organization URL | `yourcompany.onmicrosoft.com` | Your M365 tenant identifier |
+| PFX File | `contactsync.mydomain.com.pfx` | Certificate with private key |
+| CER File | `contactsync.mydomain.com.cer` | Public certificate for Azure upload |
+| Encrypted Password | `contactsync.mydomain.com.cred` | Secure password storage (if used) |
+
+### Security Reminders
+
+- **Always use Certificate Thumbprint authentication** for production environments
+- **Keep your .pfx files secure** - they contain private keys
+- **Don't commit certificates or passwords** to source control  
+- **Regularly review and rotate** your certificates
+- **Monitor the application logs** for any security-related issues
 
 ## Photo Handling
 
