@@ -2,9 +2,9 @@
 .SYNOPSIS
     This script will sync contacts from the GAL to 1:many mailboxes.
 .DESCRIPTION
-    This script will sync contacts from one mailbox to another. It will copy contacts from the source mailbox to the target mailbox. If the contact already exists in the target mailbox, it will be updated.
+    This script will sync contacts from the GAL to all other mailboxes. If the contact already exists in the target mailbox, in the specified Contact sub-folder, it will be updated.
 .PARAMETER ExchangeOrg
-    The Exchange Organization to connect to.
+    The Exchange Organization to connect to. (your .onmicrosoft.com domain)
 .PARAMETER ClientID
     The Client ID for the application.
 .PARAMETER CertificatePath
@@ -16,7 +16,7 @@
 .PARAMETER CertificatePasswordFile
     The path to an encrypted password file for the PFX certificate. Alternative to plaintext password.
 .PARAMETER MailboxList
-    The list of mailboxes to sync contacts to.
+    The list of mailboxes to sync contacts to. Comma-separated list of email addresses, or "DIRECTORY" to sync to all users in the directory.
 .PARAMETER ManagedContactFolderName
     The name of the folder to sync contacts to.
 .PARAMETER LogPath
@@ -24,43 +24,21 @@
 .PARAMETER FileAsFormat
     The format for the FileAs field. Valid values are "FirstLast" (default) or "LastFirst".
 .PARAMETER Categories
-    Optional array of categories to assign to contacts. Useful when syncing to main Contacts folder.
+    Optional array of categories to assign to contacts.
 #>
 
-Param(    
-    [Parameter(Mandatory = $true)]
-    [string]$ExchangeOrg,
-    
-    [Parameter(Mandatory = $true)]
-    [string]$ClientID,
-    
-    [Parameter(Mandatory = $false)]
-    [System.IO.FileInfo]$CertificatePath,
-    
-    [Parameter(Mandatory = $false)]
-    [string]$CertificateThumbprint,
-    
-    [Parameter(Mandatory = $false)]
-    [string]$CertificatePassword,
-    
-    [Parameter(Mandatory = $false)]
-    [System.IO.FileInfo]$CertificatePasswordFile,
-
-    [Parameter(Mandatory = $true)]
-    [string]$MailboxList,
-    
-    [Parameter(Mandatory = $true)]
-    [string]$ManagedContactFolderName,
-
-    [Parameter(Mandatory = $true)]
-    [string]$LogPath,
-
-    [Parameter(Mandatory = $false)]
-    [ValidateSet("FirstLast", "LastFirst")]
-    [string]$FileAsFormat = "FirstLast",
-
-    [Parameter(Mandatory = $false)]
-    [string[]]$Categories = @()
+param(    
+    [Parameter(Mandatory = $true)][string]$ExchangeOrg,
+    [Parameter(Mandatory = $true)][string]$ClientID,
+    [Parameter(Mandatory = $false)][System.IO.FileInfo]$CertificatePath,
+    [Parameter(Mandatory = $false)][string]$CertificateThumbprint,
+    [Parameter(Mandatory = $false)][string]$CertificatePassword,
+    [Parameter(Mandatory = $false)][System.IO.FileInfo]$CertificatePasswordFile,
+    [Parameter(Mandatory = $true)][string]$MailboxList,
+    [Parameter(Mandatory = $true)][string]$ManagedContactFolderName,
+    [Parameter(Mandatory = $true)][string]$LogPath,
+    [Parameter(Mandatory = $false)][ValidateSet("FirstLast", "LastFirst")][string]$FileAsFormat = "FirstLast",
+    [Parameter(Mandatory = $false)][string[]]$Categories = @()
 )
 
 # Parameter validation
@@ -83,30 +61,20 @@ Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
 function Sync-ManagedContacts {
     [CmdletBinding()]
     param (
-        [Parameter(Mandatory = $true)]
-        [string]$Mailbox,
-
-        [Parameter(Mandatory = $true)]
-        [string]$ManagedContactFolderName,
-
-        [Parameter(Mandatory = $true)]
-        $ManagedContacts,
-
-        [Parameter(Mandatory = $false)]
-        [ValidateSet("FirstLast", "LastFirst")]
-        [string]$FileAsFormat = "FirstLast",
-
-        [Parameter(Mandatory = $false)]
-        [string[]]$Categories = @()
+        [Parameter(Mandatory = $true)][string]$Mailbox,
+        [Parameter(Mandatory = $true)][string]$ManagedContactFolderName,
+        [Parameter(Mandatory = $true)]$ManagedContacts,
+        [Parameter(Mandatory = $false)][ValidateSet("FirstLast", "LastFirst")][string]$FileAsFormat = "FirstLast",
+        [Parameter(Mandatory = $false)][string[]]$Categories = @()
     )
 
     # Get the given User's Managed Contact Folder
-    Write-InfoLog "Locating Managed Contact folder for $Mailbox"
+    Write-InfoLog "[$Mailbox] Locating Managed Contact folder"
     $ManagedContactFolder = Get-MgUserContactFolder -UserId $Mailbox -Filter "DisplayName eq '$ManagedContactFolderName'"
 
     # If the Managed Contact Folder does not exist, create it
     if ($null -eq $ManagedContactFolder) {
-        Write-InfoLog "Creating Managed Contact folder"
+        Write-InfoLog "[$Mailbox] Creating Managed Contact folder ($ManagedContactFolderName)"
         $ManagedContactFolder = New-MgUserContactFolder -UserId $Mailbox -DisplayName $ManagedContactFolderName
     }
 
@@ -221,33 +189,25 @@ function Sync-ManagedContacts {
             $StoredPhotoChecksum = $ExistingContact.Extensions.AdditionalProperties.PhotoChecksum ?? ""
             if ($CurrentPhotoChecksum -ne $StoredPhotoChecksum) {
                 $PhotoChanged = $true
-                Write-VerboseLog "Photo changed for contact: $($ManagedContact.DisplayName) - Old: [$StoredPhotoChecksum] New: [$CurrentPhotoChecksum]"
+                Write-VerboseLog "[$Mailbox] $($ManagedContact.DisplayName) photo changed. Old:[$StoredPhotoChecksum] New:[$CurrentPhotoChecksum]"
             }
         }
 
-        Write-VerboseLog "Comparing Managed Contact Checksums: [$ExistingContactChecksum] vs [$ManagedContactChecksum]"
+        if ($ExistingContactChecksum -ne $ManagedContactChecksum) {
+            Write-VerboseLog "[$Mailbox] $($ManagedContact.DisplayName) contact checksums changed. Old:[$ExistingContactChecksum] New:[$ManagedContactChecksum]"
+        }        
 
         if ($ExistingContactChecksum -ne $ManagedContactChecksum -or $PhotoChanged) {
             #if this is an edited contact or photo changed, effectively delete the old one and add the new one
-            if ($ExistingContactChecksum -ne $ManagedContactChecksum) {
-                Write-DebugLog "Detected changed contact: $($ManagedContact.DisplayName)"
-            }
-            if ($PhotoChanged) {
-                Write-DebugLog "Detected photo change for contact: $($ManagedContact.DisplayName)"
-                # Remove old photo file to force re-download
-                $OldPhotoPath = "Photos\$($ManagedContact.UserPrincipalName).jpg"
-                if (Test-Path $OldPhotoPath) {
-                    Remove-Item $OldPhotoPath -Force -ErrorAction SilentlyContinue
-                    Write-VerboseLog "Removed old photo file: $OldPhotoPath"
-                }
-            }
+            Write-DebugLog "[$Mailbox] $($ManagedContact.DisplayName) contact changed. Marking for update."
+
             $ContactsToDelete += $ExistingContact
             $ContactsToAdd += $ManagedContact
         }
     }
 
     foreach ($Contact in $ContactsToDelete) {
-        Write-VerboseLog "Deleting contact: $($Contact.DisplayName)"
+        Write-VerboseLog "[$Mailbox] Deleting contact: $($Contact.DisplayName)"
         Remove-MgUserContactFolderContact -UserId $Mailbox -ContactFolderId $ManagedContactFolder.Id -ContactId $Contact.Id
     }
 
@@ -268,14 +228,13 @@ function Sync-ManagedContacts {
             }
             
             # Download photo if it doesn't exist (including after photo change detection)
-            if (!(Test-Path -PathType Leaf -Path "Photos\$($Contact.UserPrincipalName).jpg")) {
+            if (!(Test-Path -PathType Leaf -Path "Photos\$($Contact.UserPrincipalName)-$PhotoChecksum.jpg")) {
                 Write-VerboseLog "Downloading photo for contact: $($Contact.DisplayName)"
-                Get-MgUserPhotoContent -UserId $Contact.UserPrincipalName -ProfilePhotoId 120x120 -OutFile "Photos\$($Contact.UserPrincipalName).jpg" -ErrorAction SilentlyContinue
+                Get-MgUserPhotoContent -UserId $Contact.UserPrincipalName -ProfilePhotoId 120x120 -OutFile "Photos\$($Contact.UserPrincipalName)-$PhotoChecksum.jpg" -ErrorAction SilentlyContinue
             }
-            if ((Test-Path -PathType Leaf -Path "Photos\$($Contact.UserPrincipalName).jpg")) {
-                $ContactPhotoFile = "Photos\$($Contact.UserPrincipalName).jpg"
+            if ((Test-Path -PathType Leaf -Path "Photos\$($Contact.UserPrincipalName)-$PhotoChecksum.jpg")) {
+                $ContactPhotoFile = "Photos\$($Contact.UserPrincipalName)-$PhotoChecksum.jpg"
             }
-            #$ContactPhoto = Get-Content -Path "$($Contact.UserPrincipalName).jpg" -AsByteStream -ErrorAction SilentlyContinue
         }
       
         if ($Contact.EntryType -eq 'User') {
@@ -286,7 +245,7 @@ function Sync-ManagedContacts {
         }
         $ManagedContactChecksum = [System.BitConverter]::ToString($md5.ComputeHash($utf8.GetBytes($ManagedContactString)))
 
-        Write-VerboseLog "Adding contact: $($Contact.DisplayName) with checksum: $ManagedContactChecksum"
+        Write-VerboseLog "[$Mailbox] Adding contact $($Contact.DisplayName). Checksum:$ManagedContactChecksum"
 
         # Determine the FileAs value based on the format
         $fileAsValue = ""
@@ -357,7 +316,7 @@ function Sync-ManagedContacts {
         $newContactObject = New-MgUserContactFolderContact -UserId $Mailbox -ContactFolderId $ManagedContactFolder.Id -BodyParameter $newContact
 
         if ($null -ne $ContactPhotoFile) {
-            Write-VerboseLog "Adding photo to contact: $($Contact.DisplayName)"
+            Write-VerboseLog "[$Mailbox] Adding photo to contact: $($Contact.DisplayName)"
             Set-MgUserContactFolderContactPhotoContent -UserId $Mailbox -ContactFolderId $ManagedContactFolder.Id -ContactId $newContactObject.Id -InFile $ContactPhotoFile
         }
     }
@@ -417,7 +376,7 @@ else {
     }
     else {
         # Use plaintext password (not recommended)
-        Write-InfoLog "WARNING: Using plaintext password for certificate. Consider using CertificateThumbprint or CertificatePasswordFile for better security."
+        Write-WarningLog "Using plaintext password for certificate. Consider using CertificateThumbprint or CertificatePasswordFile for better security."
         $SecureCertificatePassword = ConvertTo-SecureString -String $CertificatePassword -AsPlainText -Force
     }
     
@@ -426,7 +385,7 @@ else {
 }
 
 # Connect to the Microsoft Graph API
-Connect-MgGraph -Certificate $Certificate -ClientId $ClientID -TenantId $ExchangeOrg -Verbose
+Connect-MgGraph -Certificate $Certificate -ClientId $ClientID -TenantId $ExchangeOrg -NoWelcome
 
 # Get all Users in the directory, selecting only key fields
 $UserList = Get-MgUser -Filter '(AccountEnabled eq true)' -All -Property `
@@ -434,10 +393,9 @@ $UserList = Get-MgUser -Filter '(AccountEnabled eq true)' -All -Property `
 | Select-Object @{Name = 'EntryType'; Expression = { 'User' } }, Id, UserType, UserPrincipalName, ShowInAddressList, EmployeeId, DisplayName, GivenName, Surname, CompanyName, JobTitle, Department, OfficeLocation, Mail, BusinessPhones, MobilePhone, StreetAddress, City, State, PostalCode, Country
 
 # Filter out users that are not members, have no job title, or are not in the address list
-#$FilteredOutUsers = $UserList | Where-Object UserType -NE 'Member' | Where-Object JobTitle -EQ $null | Where-Object ShowInAddressList -In ($false, $null)
-#$UserList = $UserList | Where-Object UserType -EQ 'Member' | Where-Object ShowInAddressList -NE $false | Where-Object JobTitle -NE $null
-$UserList = $UserList | Where-Object UserType -EQ 'Member' | Where-Object ShowInAddressList -NE $false | Where-Object JobTitle -NE $null | Where-Object EmployeeId -NE $null
-
+#$FilteredOutUsers = $UserList | Where-Object UserType -ne 'Member' | Where-Object JobTitle -eq $null | Where-Object ShowInAddressList -in ($false, $null)
+#$UserList = $UserList | Where-Object UserType -eq 'Member' | Where-Object ShowInAddressList -ne $false | Where-Object JobTitle -ne $null
+$UserList = $UserList | Where-Object UserType -eq 'Member' | Where-Object ShowInAddressList -ne $false | Where-Object JobTitle -ne $null | Where-Object EmployeeId -ne $null
 
 $OrgContactList = Get-MgContact -All -Property `
     <#                                                        #>    Id, DisplayName, GivenName, Surname, CompanyName, JobTitle , Mail, Phones, Addresses
@@ -449,12 +407,12 @@ if ($MailboxList -eq "DIRECTORY" ) {
     $MailboxTargets = ($UserList | Select-Object UserPrincipalName).UserPrincipalName
 }
 else {
-    $MailboxTargets = $MailboxList -Split ","
+    $MailboxTargets = $MailboxList -split ","
 }
 
 foreach ($MailboxTarget in $MailboxTargets) {
     try {
-        Write-DebugLog "Syncing Managed Contacts for Mailbox: $MailboxTarget"
+        Write-DebugLog "[$MailboxTarget] Syncing Managed Contacts"
         Sync-ManagedContacts -Mailbox $MailboxTarget -ManagedContactFolderName $ManagedContactFolderName -ManagedContacts $CombinedContactList -FileAsFormat $FileAsFormat -Categories $Categories
     }
     catch {
