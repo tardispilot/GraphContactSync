@@ -65,7 +65,9 @@ function Sync-ManagedContacts {
         [Parameter(Mandatory = $true)][string]$ManagedContactFolderName,
         [Parameter(Mandatory = $true)]$ManagedContacts,
         [Parameter(Mandatory = $false)][ValidateSet("FirstLast", "LastFirst")][string]$FileAsFormat = "FirstLast",
-        [Parameter(Mandatory = $false)][string[]]$Categories = @()
+        [Parameter(Mandatory = $false)][string[]]$Categories = @(),
+        [Parameter(Mandatory = $false)]$ManagedContactChecksums = @{},
+        [Parameter(Mandatory = $false)]$PhotoMetadataCache = @{}
     )
 
     # Get the given User's Managed Contact Folder
@@ -82,40 +84,77 @@ function Sync-ManagedContacts {
 
     # So, now we have the list of contacts in the Managed Contact Folder, and we have the list of contacts that we want to sync. We need to compare the two lists and determine which contacts need to be added, updated, or deleted.
 
+    # Create hashtables for efficient lookups
+    $ExistingContactIds = @{}
+    $ManagedContactIds = @{}
+    
+    $ExistingManagedContacts | ForEach-Object { $ExistingContactIds[$_.Extensions.AdditionalProperties.CorrelationId] = $_ }
+    $ManagedContacts | ForEach-Object { $ManagedContactIds[$_.Id] = $_ }
+
     $ContactsToAdd = @()
     $ContactsToDelete = @()
 
-    $ContactsToAdd += $ManagedContacts | Where-Object { $ExistingManagedContacts.Extensions.AdditionalProperties.CorrelationId -notcontains $_.Id }
-    $ContactsToDelete += $ExistingManagedContacts | Where-Object { $ManagedContacts.Id -notcontains $_.Extensions.AdditionalProperties.CorrelationId }
-    $ContactsToChecksum = $ExistingManagedContacts | Where-Object { $ManagedContacts.Id -contains $_.Extensions.AdditionalProperties.CorrelationId }
+    # Use hashtable lookups for better performance
+    $ContactsToAdd += $ManagedContacts | Where-Object { -not $ExistingContactIds.ContainsKey($_.Id) }
+    $ContactsToDelete += $ExistingManagedContacts | Where-Object { -not $ManagedContactIds.ContainsKey($_.Extensions.AdditionalProperties.CorrelationId) }
+    $ContactsToChecksum = $ExistingManagedContacts | Where-Object { $ManagedContactIds.ContainsKey($_.Extensions.AdditionalProperties.CorrelationId) }
 
     $md5 = New-Object -TypeName System.Security.Cryptography.MD5CryptoServiceProvider
     $utf8 = New-Object -TypeName System.Text.UTF8Encoding
     foreach ($ExistingContact in $ContactsToChecksum) {
         # Get the Managed Contact that corresponds to the existing contact entry in the Mailbox's Managed Contact Folder
-        $ManagedContact = $ManagedContacts | Where-Object { $_.Id -eq $ExistingContact.Extensions.AdditionalProperties.CorrelationId }
-        #$ExistingContactChecksum = $ExistingContact.Extensions.AdditionalProperties.ContactChecksum
+        $ManagedContact = $ManagedContactIds[$ExistingContact.Extensions.AdditionalProperties.CorrelationId]
 
-        $ManagedContactChecksumFields = ""
+        # Use precalculated checksum if available, otherwise calculate it
+        $ManagedContactChecksum = ""
+        if ($ManagedContactChecksums.ContainsKey($ManagedContact.Id)) {
+            $ManagedContactChecksum = $ManagedContactChecksums[$ManagedContact.Id]
+        }
+        else {
+            # Fallback to original calculation if not precalculated
+            $ManagedContactChecksumFields = ""
+            if ($ManagedContact.EntryType -eq 'User') {
+                $ManagedContactChecksumFields = ($ManagedContact | Select-Object -Property `
+                    @{Name = 'DisplayName'; Expression = { $_.DisplayName ?? "" } }, `
+                    @{Name = 'GivenName'; Expression = { $_.GivenName ?? "" } }, `
+                    @{Name = 'Surname'; Expression = { $_.Surname ?? "" } }, `
+                    @{Name = 'CompanyName'; Expression = { $_.CompanyName ?? "" } }, `
+                    @{Name = 'JobTitle'; Expression = { $_.JobTitle ?? "" } }, `
+                    @{Name = 'Department'; Expression = { $_.Department ?? "" } }, `
+                    @{Name = 'OfficeLocation'; Expression = { $_.OfficeLocation ?? "" } }, `
+                    @{Name = 'Mail'; Expression = { $_.Mail ?? "" } }, `
+                    @{Name = 'BusinessPhones'; Expression = { $_.BusinessPhones ?? "" } }, `
+                    @{Name = 'MobilePhone'; Expression = { $_.MobilePhone ?? "" } }, `
+                    @{Name = 'StreetAddress'; Expression = { $_.StreetAddress ?? "" } }, `
+                    @{Name = 'City'; Expression = { $_.City ?? "" } }, `
+                    @{Name = 'State'; Expression = { $_.State ?? "" } }, `
+                    @{Name = 'PostalCode'; Expression = { $_.PostalCode ?? "" } }, `
+                    @{Name = 'Country'; Expression = { $_.Country ?? "" } } `
+                    | ConvertTo-Json -Depth 10)
+            }
+            elseif ($ManagedContact.EntryType -eq 'Contact') {
+                $ManagedContactChecksumFields = ($ManagedContact | Select-Object -Property `
+                    @{Name = 'DisplayName'; Expression = { $_.DisplayName ?? "" } }, `
+                    @{Name = 'GivenName'; Expression = { $_.GivenName ?? "" } }, `
+                    @{Name = 'Surname'; Expression = { $_.Surname ?? "" } }, `
+                    @{Name = 'CompanyName'; Expression = { $_.CompanyName ?? "" } }, `
+                    @{Name = 'JobTitle'; Expression = { $_.JobTitle ?? "" } }, `
+                    @{Name = 'Mail'; Expression = { $_.Mail ?? "" } }, `
+                    @{Name = 'Mobile'; Expression = { $_.Phones[1].Number ?? "" } }, `
+                    @{Name = 'BusinessPhone'; Expression = { $_.Phones[2].Number ?? "" } }, `
+                    @{Name = 'StreetAddress'; Expression = { $_.Addresses[0].Street ?? "" } }, `
+                    @{Name = 'City'; Expression = { $_.Addresses[0].City ?? "" } }, `
+                    @{Name = 'State'; Expression = { $_.Addresses[0].State ?? "" } }, `
+                    @{Name = 'PostalCode'; Expression = { $_.Addresses[0].PostalCode ?? "" } }, `
+                    @{Name = 'Country'; Expression = { $_.Addresses[0].Country ?? "" } } `
+                    | ConvertTo-Json -Depth 10)
+            }
+            $ManagedContactChecksum = [System.BitConverter]::ToString($md5.ComputeHash($utf8.GetBytes($ManagedContactChecksumFields)))
+        }
+
+        # Calculate existing contact checksum
         $ExistingContactChecksumFields = ""
         if ($ManagedContact.EntryType -eq 'User') {
-            $ManagedContactChecksumFields = ($ManagedContact | Select-Object -Property `
-                @{Name = 'DisplayName'; Expression = { $_.DisplayName ?? "" } }, `
-                @{Name = 'GivenName'; Expression = { $_.GivenName ?? "" } }, `
-                @{Name = 'Surname'; Expression = { $_.Surname ?? "" } }, `
-                @{Name = 'CompanyName'; Expression = { $_.CompanyName ?? "" } }, `
-                @{Name = 'JobTitle'; Expression = { $_.JobTitle ?? "" } }, `
-                @{Name = 'Department'; Expression = { $_.Department ?? "" } }, `
-                @{Name = 'OfficeLocation'; Expression = { $_.OfficeLocation ?? "" } }, `
-                @{Name = 'Mail'; Expression = { $_.Mail ?? "" } }, `
-                @{Name = 'BusinessPhones'; Expression = { $_.BusinessPhones ?? "" } }, `
-                @{Name = 'MobilePhone'; Expression = { $_.MobilePhone ?? "" } }, `
-                @{Name = 'StreetAddress'; Expression = { $_.StreetAddress ?? "" } }, `
-                @{Name = 'City'; Expression = { $_.City ?? "" } }, `
-                @{Name = 'State'; Expression = { $_.State ?? "" } }, `
-                @{Name = 'PostalCode'; Expression = { $_.PostalCode ?? "" } }, `
-                @{Name = 'Country'; Expression = { $_.Country ?? "" } } `
-                | ConvertTo-Json -Depth 10)
             $ExistingContactChecksumFields = ($ExistingContact | Select-Object -Property `
                 @{Name = 'DisplayName'; Expression = { $_.DisplayName ?? "" } }, `
                 @{Name = 'GivenName'; Expression = { $_.GivenName ?? "" } }, `
@@ -135,21 +174,6 @@ function Sync-ManagedContacts {
                 | ConvertTo-Json -Depth 10)
         }
         elseif ($ManagedContact.EntryType -eq 'Contact') {
-            $ManagedContactChecksumFields = ($ManagedContact | Select-Object -Property `
-                @{Name = 'DisplayName'; Expression = { $_.DisplayName ?? "" } }, `
-                @{Name = 'GivenName'; Expression = { $_.GivenName ?? "" } }, `
-                @{Name = 'Surname'; Expression = { $_.Surname ?? "" } }, `
-                @{Name = 'CompanyName'; Expression = { $_.CompanyName ?? "" } }, `
-                @{Name = 'JobTitle'; Expression = { $_.JobTitle ?? "" } }, `
-                @{Name = 'Mail'; Expression = { $_.Mail ?? "" } }, `
-                @{Name = 'Mobile'; Expression = { $_.Phones[1].Number ?? "" } }, `
-                @{Name = 'BusinessPhone'; Expression = { $_.Phones[2].Number ?? "" } }, `
-                @{Name = 'StreetAddress'; Expression = { $_.Addresses[0].Street ?? "" } }, `
-                @{Name = 'City'; Expression = { $_.Addresses[0].City ?? "" } }, `
-                @{Name = 'State'; Expression = { $_.Addresses[0].State ?? "" } }, `
-                @{Name = 'PostalCode'; Expression = { $_.Addresses[0].PostalCode ?? "" } }, `
-                @{Name = 'Country'; Expression = { $_.Addresses[0].Country ?? "" } } `
-                | ConvertTo-Json -Depth 10)
             $ExistingContactChecksumFields = ($ExistingContact | Select-Object -Property `
                 @{Name = 'DisplayName'; Expression = { $_.DisplayName ?? "" } }, `
                 @{Name = 'GivenName'; Expression = { $_.GivenName ?? "" } }, `
@@ -166,16 +190,22 @@ function Sync-ManagedContacts {
                 @{Name = 'Country'; Expression = { $_.BusinessAddress.CountryOrRegion ?? "" } } `
                 | ConvertTo-Json -Depth 10)
         }
-
-        $ManagedContactChecksum = [System.BitConverter]::ToString($md5.ComputeHash($utf8.GetBytes($ManagedContactChecksumFields)))
         $ExistingContactChecksum = [System.BitConverter]::ToString($md5.ComputeHash($utf8.GetBytes($ExistingContactChecksumFields)))
 
-        # Check for photo changes for User contacts
+        # Check for photo changes for User contacts using cached metadata
         $PhotoChanged = $false
         if ($ManagedContact.EntryType -eq 'User') {
-            # Get current photo metadata
-            $CurrentPhotoMeta = Get-MgUserPhoto -UserId $ManagedContact.UserPrincipalName -ProfilePhotoId 120x120 -ErrorAction SilentlyContinue
             $CurrentPhotoChecksum = ""
+            
+            # Use cached photo metadata if available
+            if ($PhotoMetadataCache.ContainsKey($ManagedContact.UserPrincipalName)) {
+                $CurrentPhotoMeta = $PhotoMetadataCache[$ManagedContact.UserPrincipalName]
+            }
+            else {
+                # Fallback to individual API call if not cached
+                $CurrentPhotoMeta = Get-MgUserPhoto -UserId $ManagedContact.UserPrincipalName -ProfilePhotoId 120x120 -ErrorAction SilentlyContinue
+            }
+            
             if ($CurrentPhotoMeta) {
                 # Use mediaETag if available (preferred method), fallback to ID+dimensions for compatibility
                 $PhotoFingerprint = $CurrentPhotoMeta.AdditionalProperties["@odata.mediaEtag"]
@@ -216,8 +246,16 @@ function Sync-ManagedContacts {
         $ContactPhotoFile = $null
         $PhotoChecksum = ""
         if ($Contact.EntryType -eq 'User') {
-            # Get photo metadata to create checksum for change detection
-            $PhotoMeta = Get-MgUserPhoto -UserId $Contact.UserPrincipalName -ProfilePhotoId 120x120 -ErrorAction SilentlyContinue
+            # Use cached photo metadata if available, otherwise fetch it
+            $PhotoMeta = $null
+            if ($PhotoMetadataCache.ContainsKey($Contact.UserPrincipalName)) {
+                $PhotoMeta = $PhotoMetadataCache[$Contact.UserPrincipalName]
+            }
+            else {
+                # Fallback to individual API call if not cached
+                $PhotoMeta = Get-MgUserPhoto -UserId $Contact.UserPrincipalName -ProfilePhotoId 120x120 -ErrorAction SilentlyContinue
+            }
+            
             if ($PhotoMeta) {
                 # Use mediaETag if available (preferred method), fallback to ID+dimensions for compatibility
                 $PhotoFingerprint = $PhotoMeta.AdditionalProperties["@odata.mediaEtag"]
@@ -237,13 +275,21 @@ function Sync-ManagedContacts {
             }
         }
       
-        if ($Contact.EntryType -eq 'User') {
-            $ManagedContactString = ($Contact | Select-Object -Property DisplayName, GivenName, Surname, CompanyName, JobTitle, Department, OfficeLocation, Mail, BusinessPhones, MobilePhone, StreetAddress, City, State, PostalCode, Country | ConvertTo-Json -Depth 10)
+        # Use precalculated checksum if available, otherwise calculate it
+        $ManagedContactChecksum = ""
+        if ($ManagedContactChecksums.ContainsKey($Contact.Id)) {
+            $ManagedContactChecksum = $ManagedContactChecksums[$Contact.Id]
         }
-        elseif ($Contact.EntryType -eq 'Contact') {
-            $ManagedContactString = ($Contact | Select-Object -Property DisplayName, GivenName, Surname, CompanyName, JobTitle, Department, Mail, Phones, Addresses | ConvertTo-Json -Depth 10)
+        else {
+            # Fallback to original calculation
+            if ($Contact.EntryType -eq 'User') {
+                $ManagedContactString = ($Contact | Select-Object -Property DisplayName, GivenName, Surname, CompanyName, JobTitle, Department, OfficeLocation, Mail, BusinessPhones, MobilePhone, StreetAddress, City, State, PostalCode, Country | ConvertTo-Json -Depth 10)
+            }
+            elseif ($Contact.EntryType -eq 'Contact') {
+                $ManagedContactString = ($Contact | Select-Object -Property DisplayName, GivenName, Surname, CompanyName, JobTitle, Department, Mail, Phones, Addresses | ConvertTo-Json -Depth 10)
+            }
+            $ManagedContactChecksum = [System.BitConverter]::ToString($md5.ComputeHash($utf8.GetBytes($ManagedContactString)))
         }
-        $ManagedContactChecksum = [System.BitConverter]::ToString($md5.ComputeHash($utf8.GetBytes($ManagedContactString)))
 
         Write-VerboseLog "[$Mailbox] Adding contact $($Contact.DisplayName). Checksum:$ManagedContactChecksum"
 
@@ -330,6 +376,107 @@ New-Logger `
 
 Write-InfoLog "Starting Graph Contact Sync"
 
+# Function to precalculate checksums for all managed contacts
+function Get-ContactChecksums {
+    param (
+        [Parameter(Mandatory = $true)]$ManagedContacts
+    )
+    
+    $checksums = @{}
+    $md5 = New-Object -TypeName System.Security.Cryptography.MD5CryptoServiceProvider
+    $utf8 = New-Object -TypeName System.Text.UTF8Encoding
+    
+    Write-InfoLog "Precalculating checksums for $($ManagedContacts.Count) contacts"
+    
+    foreach ($Contact in $ManagedContacts) {
+        $checksumFields = ""
+        if ($Contact.EntryType -eq 'User') {
+            $checksumFields = ($Contact | Select-Object -Property `
+                @{Name = 'DisplayName'; Expression = { $_.DisplayName ?? "" } }, `
+                @{Name = 'GivenName'; Expression = { $_.GivenName ?? "" } }, `
+                @{Name = 'Surname'; Expression = { $_.Surname ?? "" } }, `
+                @{Name = 'CompanyName'; Expression = { $_.CompanyName ?? "" } }, `
+                @{Name = 'JobTitle'; Expression = { $_.JobTitle ?? "" } }, `
+                @{Name = 'Department'; Expression = { $_.Department ?? "" } }, `
+                @{Name = 'OfficeLocation'; Expression = { $_.OfficeLocation ?? "" } }, `
+                @{Name = 'Mail'; Expression = { $_.Mail ?? "" } }, `
+                @{Name = 'BusinessPhones'; Expression = { $_.BusinessPhones ?? "" } }, `
+                @{Name = 'MobilePhone'; Expression = { $_.MobilePhone ?? "" } }, `
+                @{Name = 'StreetAddress'; Expression = { $_.StreetAddress ?? "" } }, `
+                @{Name = 'City'; Expression = { $_.City ?? "" } }, `
+                @{Name = 'State'; Expression = { $_.State ?? "" } }, `
+                @{Name = 'PostalCode'; Expression = { $_.PostalCode ?? "" } }, `
+                @{Name = 'Country'; Expression = { $_.Country ?? "" } } `
+                | ConvertTo-Json -Depth 10)
+        }
+        elseif ($Contact.EntryType -eq 'Contact') {
+            $checksumFields = ($Contact | Select-Object -Property `
+                @{Name = 'DisplayName'; Expression = { $_.DisplayName ?? "" } }, `
+                @{Name = 'GivenName'; Expression = { $_.GivenName ?? "" } }, `
+                @{Name = 'Surname'; Expression = { $_.Surname ?? "" } }, `
+                @{Name = 'CompanyName'; Expression = { $_.CompanyName ?? "" } }, `
+                @{Name = 'JobTitle'; Expression = { $_.JobTitle ?? "" } }, `
+                @{Name = 'Mail'; Expression = { $_.Mail ?? "" } }, `
+                @{Name = 'Mobile'; Expression = { $_.Phones[1].Number ?? "" } }, `
+                @{Name = 'BusinessPhone'; Expression = { $_.Phones[2].Number ?? "" } }, `
+                @{Name = 'StreetAddress'; Expression = { $_.Addresses[0].Street ?? "" } }, `
+                @{Name = 'City'; Expression = { $_.Addresses[0].City ?? "" } }, `
+                @{Name = 'State'; Expression = { $_.Addresses[0].State ?? "" } }, `
+                @{Name = 'PostalCode'; Expression = { $_.Addresses[0].PostalCode ?? "" } }, `
+                @{Name = 'Country'; Expression = { $_.Addresses[0].Country ?? "" } } `
+                | ConvertTo-Json -Depth 10)
+        }
+        
+        $checksum = [System.BitConverter]::ToString($md5.ComputeHash($utf8.GetBytes($checksumFields)))
+        $checksums[$Contact.Id] = $checksum
+    }
+    
+    Write-InfoLog "Completed checksum precalculation"
+    return $checksums
+}
+
+# Function to batch retrieve photo metadata for User contacts
+function Get-PhotoMetadataCache {
+    param (
+        [Parameter(Mandatory = $true)]$UserContacts
+    )
+    
+    $photoCache = @{}
+    $userPrincipals = $UserContacts | Where-Object { $_.EntryType -eq 'User' } | Select-Object -ExpandProperty UserPrincipalName
+    
+    if ($userPrincipals.Count -eq 0) {
+        return $photoCache
+    }
+    
+    Write-InfoLog "Batch retrieving photo metadata for $($userPrincipals.Count) user contacts"
+    
+    # Process in batches to avoid API throttling
+    $batchSize = 50
+    for ($i = 0; $i -lt $userPrincipals.Count; $i += $batchSize) {
+        $batch = $userPrincipals | Select-Object -Skip $i -First $batchSize
+        
+        foreach ($userPrincipal in $batch) {
+            try {
+                $photoMeta = Get-MgUserPhoto -UserId $userPrincipal -ProfilePhotoId 120x120 -ErrorAction SilentlyContinue
+                if ($photoMeta) {
+                    $photoCache[$userPrincipal] = $photoMeta
+                }
+            }
+            catch {
+                Write-VerboseLog "Failed to get photo metadata for user: $userPrincipal"
+            }
+        }
+        
+        # Small delay between batches to be respectful to the API
+        if ($i + $batchSize -lt $userPrincipals.Count) {
+            Start-Sleep -Milliseconds 100
+        }
+    }
+    
+    Write-InfoLog "Completed photo metadata batch retrieval. Cached $($photoCache.Count) photo metadata entries"
+    return $photoCache
+}
+
 $ErrorActionPreference = "Stop"
 $VerbosePreference = "Continue"
 
@@ -403,6 +550,11 @@ $OrgContactList = Get-MgContact -All -Property `
 
 $CombinedContactList = $OrgContactList + $UserList 
 
+# Optimize for speed: Precalculate checksums and batch photo metadata retrieval
+Write-InfoLog "Optimizing for speed: Precalculating checksums and retrieving photo metadata"
+$ManagedContactChecksums = Get-ContactChecksums -ManagedContacts $CombinedContactList
+$PhotoMetadataCache = Get-PhotoMetadataCache -UserContacts $CombinedContactList
+
 if ($MailboxList -eq "DIRECTORY" ) {
     $MailboxTargets = ($UserList | Select-Object UserPrincipalName).UserPrincipalName
 }
@@ -413,7 +565,7 @@ else {
 foreach ($MailboxTarget in $MailboxTargets) {
     try {
         Write-DebugLog "[$MailboxTarget] Syncing Managed Contacts"
-        Sync-ManagedContacts -Mailbox $MailboxTarget -ManagedContactFolderName $ManagedContactFolderName -ManagedContacts $CombinedContactList -FileAsFormat $FileAsFormat -Categories $Categories
+        Sync-ManagedContacts -Mailbox $MailboxTarget -ManagedContactFolderName $ManagedContactFolderName -ManagedContacts $CombinedContactList -FileAsFormat $FileAsFormat -Categories $Categories -ManagedContactChecksums $ManagedContactChecksums -PhotoMetadataCache $PhotoMetadataCache
     }
     catch {
         Write-ErrorLog "Error syncing Managed Contacts for Mailbox: $MailboxTarget Exception: $_.Exception"
