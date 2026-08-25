@@ -25,6 +25,16 @@
     The format for the FileAs field. Valid values are "FirstLast" (default) or "LastFirst".
 .PARAMETER Categories
     Optional array of categories to assign to contacts.
+.PARAMETER NoJobTitle
+    Optional. When specified, excludes users with no Job Title (default behaviour includes them).
+.PARAMETER NoEmployeeId
+    Optional. When specified, excludes users with no Employee ID (default behaviour includes them).
+.PARAMETER NoMailbox
+    Optional. When specified, excludes users with no Exchange mailbox (default behaviour includes them).
+.PARAMETER NoPhoneNumber
+    Optional. When specified, excludes users/contacts with no phone number on any field - business, mobile, or otherwise (default behaviour includes them).
+.PARAMETER NoSharedMailbox
+    Optional. When specified, excludes shared mailboxes from both the contact source list and the sync targets (default behaviour includes them). Requires the ExchangeOnlineManagement module and an Exchange admin role assigned to the app (e.g. Exchange Recipient Administrator), in addition to the Graph permissions already required.
 #>
 
 param(    
@@ -38,7 +48,12 @@ param(
     [Parameter(Mandatory = $true)][string]$ManagedContactFolderName,
     [Parameter(Mandatory = $true)][string]$LogPath,
     [Parameter(Mandatory = $false)][ValidateSet("FirstLast", "LastFirst")][string]$FileAsFormat = "FirstLast",
-    [Parameter(Mandatory = $false)][string[]]$Categories = @()
+    [Parameter(Mandatory = $false)][string[]]$Categories = @(),
+    [Parameter(Mandatory = $false)][switch]$NoJobTitle,
+    [Parameter(Mandatory = $false)][switch]$NoEmployeeId,
+    [Parameter(Mandatory = $false)][switch]$NoMailbox,
+    [Parameter(Mandatory = $false)][switch]$NoPhoneNumber,
+    [Parameter(Mandatory = $false)][switch]$NoSharedMailbox
 )
 
 # Parameter validation
@@ -55,8 +70,31 @@ if ($CertificatePath -and -not $CertificatePassword -and -not $CertificatePasswo
 }
 
 Import-Module PoShLog
+if ($NoSharedMailbox) {
+    Import-Module ExchangeOnlineManagement
+}
 
 Set-ExecutionPolicy -Scope Process -ExecutionPolicy Bypass
+
+function Test-HasAnyPhoneNumber {
+    # Returns $true if the given User or Contact record has at least one non-empty
+    # phone number populated anywhere (business, mobile, or the Phones collection).
+    [CmdletBinding()]
+    param (
+        [Parameter(Mandatory = $true)]$Record
+    )
+
+    if ($Record.EntryType -eq 'User') {
+        $HasBusinessPhone = [bool]($Record.BusinessPhones | Where-Object { $_ -and $_.Trim() -ne "" })
+        $HasMobilePhone = [bool]($Record.MobilePhone -and $Record.MobilePhone.Trim() -ne "")
+        return ($HasBusinessPhone -or $HasMobilePhone)
+    }
+    elseif ($Record.EntryType -eq 'Contact') {
+        return [bool]($Record.Phones | Where-Object { $_.Number -and $_.Number.Trim() -ne "" })
+    }
+
+    return $false
+}
 
 function Sync-ManagedContacts {
     [CmdletBinding()]
@@ -395,13 +433,38 @@ $UserList = Get-MgUser -Filter '(AccountEnabled eq true)' -All -Property `
 # Filter out users that are not members, have no job title, or are not in the address list
 #$FilteredOutUsers = $UserList | Where-Object UserType -ne 'Member' | Where-Object JobTitle -eq $null | Where-Object ShowInAddressList -in ($false, $null)
 #$UserList = $UserList | Where-Object UserType -eq 'Member' | Where-Object ShowInAddressList -ne $false | Where-Object JobTitle -ne $null
-$UserList = $UserList | Where-Object UserType -eq 'Member' | Where-Object ShowInAddressList -ne $false | Where-Object JobTitle -ne $null | Where-Object EmployeeId -ne $null
+#$UserList = $UserList | Where-Object UserType -eq 'Member' | Where-Object ShowInAddressList -ne $false | Where-Object JobTitle -ne $null | Where-Object EmployeeId -ne $null
+$UserList = $UserList | Where-Object UserType -eq 'Member' | Where-Object ShowInAddressList -ne $false
+if ($NoJobTitle)   { $UserList = $UserList | Where-Object { $_.JobTitle -ne $null } }
+if ($NoEmployeeId) { $UserList = $UserList | Where-Object { $_.EmployeeId -ne $null } }
+if ($NoMailbox)    { $UserList = $UserList | Where-Object { $_.Mail -ne $null } }
+
+# Exclude shared mailboxes (Graph alone can't distinguish mailbox type, so this uses Exchange Online)
+if ($NoSharedMailbox) {
+    Write-InfoLog "Connecting to Exchange Online to identify shared mailboxes"
+    Connect-ExchangeOnline -Certificate $Certificate -AppId $ClientID -Organization $ExchangeOrg -ShowBanner:$false
+
+    $SharedMailboxUpns = (Get-EXOMailbox -RecipientTypeDetails SharedMailbox -ResultSize Unlimited -Properties UserPrincipalName).UserPrincipalName
+
+    Disconnect-ExchangeOnline -Confirm:$false
+
+    Write-InfoLog "Found $($SharedMailboxUpns.Count) shared mailboxes to exclude"
+
+    $UserList = $UserList | Where-Object { $SharedMailboxUpns -notcontains $_.UserPrincipalName }
+}
 
 $OrgContactList = Get-MgContact -All -Property `
     <#                                                        #>    Id, DisplayName, GivenName, Surname, CompanyName, JobTitle , Mail, Phones, Addresses
 | Select-Object @{Name = 'EntryType'; Expression = { 'Contact' } }, Id, DisplayName, GivenName, Surname, CompanyName, JobTitle , Mail, Phones, Addresses
 
-$CombinedContactList = $OrgContactList + $UserList 
+$CombinedContactList = @(($OrgContactList + $UserList) | Where-Object { $_ })
+
+# Exclude contacts/users with no phone number on any field
+if ($NoPhoneNumber) {
+    $PreFilterCount = $CombinedContactList.Count
+    $CombinedContactList = @($CombinedContactList | Where-Object { $_ -and (Test-HasAnyPhoneNumber -Record $_) })
+    Write-InfoLog "Excluded $($PreFilterCount - $CombinedContactList.Count) contact(s) with no phone number"
+}
 
 if ($MailboxList -eq "DIRECTORY" ) {
     $MailboxTargets = ($UserList | Select-Object UserPrincipalName).UserPrincipalName
